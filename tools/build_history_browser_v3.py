@@ -418,6 +418,7 @@ def build_html(
     .viewer.empty .viewer-actions button {{ border-color:var(--line); background:#fff; color:#33434a; }}
     .viewer-frame-wrap {{ min-height:0; position:relative; }}
     iframe {{ width:100%; height:100%; border:0; background:#3c4448; display:block; }}
+    .mobile-pdf {{ display:none; }}
     .empty-state {{ height:100%; min-height:380px; display:grid; place-items:center; padding:24px; color:var(--muted); text-align:center; background:linear-gradient(135deg,#ffffff,#eef4ff 48%,#fff7ed); }}
     .empty-state strong {{ display:block; color:var(--ink); margin-bottom:6px; }}
     .no-results {{ border:1px dashed var(--line-strong); border-radius:8px; padding:22px; color:var(--muted); background:#fff; }}
@@ -427,15 +428,30 @@ def build_html(
       .viewer {{ min-height:620px; }}
     }}
     @media (max-width:780px) {{
-      header {{ align-items:flex-start; flex-direction:column; }}
-      .stats {{ justify-content:flex-start; }}
+      .shell {{ display:block; }}
+      header {{ min-height:0; padding:10px 14px; position:static; align-items:center; flex-direction:row; }}
+      h1 {{ font-size:17px; }}
+      .stats {{ display:none; }}
       .app {{ grid-template-columns:1fr; }}
-      aside {{ max-height:none; border-right:0; border-bottom:1px solid var(--line); }}
-      main {{ overflow:visible; }}
+      aside {{ max-height:none; border-right:0; border-bottom:1px solid var(--line); padding:10px 10px 8px; overflow:hidden; position:sticky; top:0; z-index:4; }}
+      .topic-list {{ display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; scroll-snap-type:x proximity; }}
+      .topic {{ min-width:220px; max-width:260px; scroll-snap-align:start; padding:9px 10px; }}
+      .topic strong {{ font-size:12px; }}
+      main {{ overflow:visible; padding:12px; }}
       .summary {{ display:grid; }}
+      h2 {{ font-size:19px; }}
       .topic-links {{ justify-content:flex-start; }}
-      .workspace {{ min-height:0; }}
-      .viewer {{ min-height:520px; }}
+      .workspace {{ display:block; height:auto; min-height:0; }}
+      .results {{ display:block; }}
+      .task-list {{ overflow:visible; }}
+      .desktop-viewer {{ display:none; }}
+      .mobile-pdf {{ display:grid; gap:8px; border:1px solid rgba(37,99,235,.24); border-radius:8px; background:#0f172a; color:#fff; padding:8px; box-shadow:0 16px 34px rgba(15,23,42,.18); }}
+      .mobile-pdf-bar {{ display:flex; justify-content:space-between; gap:10px; align-items:center; font-size:12px; }}
+      .mobile-pdf-title {{ font-weight:700; line-height:1.25; }}
+      .mobile-pdf-actions {{ display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }}
+      .mobile-pdf-actions a, .mobile-pdf-actions button {{ border:1px solid rgba(255,255,255,.28); border-radius:8px; padding:7px 9px; background:rgba(255,255,255,.1); color:#fff; text-decoration:none; font-size:12px; }}
+      .mobile-pdf-frame {{ width:100%; height:min(72vh,620px); border:0; border-radius:6px; background:#303840; }}
+      .mobile-pdf-note {{ color:#d6e2ff; font-size:12px; line-height:1.35; }}
     }}
   </style>
 </head>
@@ -461,7 +477,7 @@ def build_html(
             <div class="result-head"><strong>Teste asociate</strong><span id="resultCount" class="count"></span></div>
             <div id="taskList" class="task-list"></div>
           </div>
-          <div id="viewer" class="viewer empty">
+          <div id="viewer" class="viewer desktop-viewer empty">
             <div class="viewer-bar">
               <div><div id="viewerTitle" class="viewer-title">Alege un test din listă</div><div id="viewerMeta" class="viewer-meta">PDF-ul se va deschide aici, în aceeași pagină.</div></div>
               <div class="viewer-actions"><button id="closeViewer" type="button">Închide</button><a id="openExternal" href="#" target="_blank" rel="noreferrer" hidden>Deschide separat</a></div>
@@ -499,6 +515,7 @@ def build_html(
     const pdfFrame = document.getElementById('pdfFrame');
     const viewerEmpty = document.getElementById('viewerEmpty');
     const openExternal = document.getElementById('openExternal');
+    const mobileQuery = window.matchMedia('(max-width: 780px)');
     const reviewedTaskCount = new Set(data.reviewed.map(tag => tag.task_id)).size;
     document.getElementById('meta').innerHTML = [
       `${{data.papers.length}} teste`,
@@ -521,6 +538,7 @@ def build_html(
         closeViewer();
         renderTopics();
         renderTasks();
+        document.getElementById('activeTitle').scrollIntoView({{block:'start', behavior:'smooth'}});
       }});
     }}
     function link(label, href) {{ return href ? `<a href="${{href}}" target="_blank" rel="noreferrer">${{label}}</a>` : ''; }}
@@ -554,7 +572,30 @@ def build_html(
         </button>`;
       }}).join('');
       for (const button of taskList.querySelectorAll('.task')) button.addEventListener('click', () => openTask(button.dataset.task));
-      if (!activeTaskId) openTask(rows[0].task_id);
+      if (!activeTaskId && !mobileQuery.matches) openTask(rows[0].task_id);
+    }}
+    function removeMobilePdf() {{
+      document.querySelectorAll('.mobile-pdf').forEach(el => el.remove());
+    }}
+    function createMobilePdf(task, paper, variant) {{
+      removeMobilePdf();
+      const activeButton = [...taskList.querySelectorAll('.task')].find(el => el.dataset.task === task.task_id);
+      if (!activeButton) return;
+      const panel = document.createElement('div');
+      panel.className = 'mobile-pdf';
+      panel.innerHTML = `
+        <div class="mobile-pdf-bar">
+          <div class="mobile-pdf-title">${{paper.year}} · ${{paper.session}}${{variant}} · ${{task.task_ref}}</div>
+          <div class="mobile-pdf-actions">
+            <button type="button" data-close-mobile>Închide</button>
+            <a href="${{task.test_url}}" target="_blank" rel="noreferrer">Deschide PDF</a>
+          </div>
+        </div>
+        <iframe class="mobile-pdf-frame" title="Test PDF" src="${{task.test_url}}"></iframe>
+        <div class="mobile-pdf-note">Pe unele telefoane PDF-ul se afișează doar separat; folosește butonul Deschide PDF dacă zona de previzualizare rămâne goală.</div>`;
+      activeButton.insertAdjacentElement('afterend', panel);
+      panel.querySelector('[data-close-mobile]').addEventListener('click', closeViewer);
+      panel.scrollIntoView({{block:'nearest', behavior:'smooth'}});
     }}
     function openTask(taskId) {{
       const task = taskById.get(taskId);
@@ -565,15 +606,26 @@ def build_html(
       const variant = paper.variant ? ` · ${{paper.variant}}` : '';
       document.getElementById('viewerTitle').textContent = `${{paper.year}} · ${{paper.session}}${{variant}} · ${{task.task_ref}}`;
       document.getElementById('viewerMeta').textContent = `Pagina ${{task.page}} · se deschide in PDF-ul original`;
+      openExternal.hidden = false;
+      openExternal.style.display = 'inline-block';
+      openExternal.href = task.test_url;
+      if (mobileQuery.matches) {{
+        viewer.classList.add('empty');
+        viewerEmpty.hidden = false;
+        viewerEmpty.style.display = 'grid';
+        pdfFrame.hidden = true;
+        pdfFrame.style.display = 'none';
+        pdfFrame.removeAttribute('src');
+        createMobilePdf(task, paper, variant);
+        return;
+      }}
+      removeMobilePdf();
       viewer.classList.remove('empty');
       viewerEmpty.hidden = true;
       viewerEmpty.style.display = 'none';
       pdfFrame.hidden = false;
       pdfFrame.style.display = 'block';
       pdfFrame.src = task.test_url;
-      openExternal.hidden = false;
-      openExternal.style.display = 'inline-block';
-      openExternal.href = task.test_url;
     }}
     function closeViewer() {{
       activeTaskId = '';
@@ -587,9 +639,16 @@ def build_html(
       pdfFrame.removeAttribute('src');
       openExternal.hidden = true;
       openExternal.style.display = 'none';
+      removeMobilePdf();
       document.querySelectorAll('.task').forEach(el => el.classList.remove('active'));
     }}
     document.getElementById('closeViewer').addEventListener('click', closeViewer);
+    const handleLayoutChange = () => {{
+      removeMobilePdf();
+      if (activeTaskId) openTask(activeTaskId);
+    }};
+    if (mobileQuery.addEventListener) mobileQuery.addEventListener('change', handleLayoutChange);
+    else mobileQuery.addListener(handleLayoutChange);
     renderTopics();
     renderTasks();
   </script>
