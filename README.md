@@ -1,6 +1,6 @@
-# Navigator istorie clasa a 9-a
+# Navigator istorie
 
-Proiect static pentru navigarea testelor de istorie dupa temele din programa.
+Proiect static pentru navigarea testelor de istorie dupa temele din programa. Interfata suporta acum clasa a 9-a si catalogul de teme BAC pentru clasa a 12-a.
 
 Versiunea curenta:
 
@@ -8,11 +8,16 @@ Versiunea curenta:
 - ignora demo-ul generat anterior;
 - foloseste doar maparile verificate din `data/reviewed_task_topics.csv`;
 - copiaza automat PDF-urile necesare in `site/pdfs/`, ca site-ul sa poata fi publicat pe server.
+- afiseaza clasa a 12-a pe epoci: antica, medievala, moderna, contemporana.
+
+Pentru clasa a 12-a, prima versiune include catalogul de teme si linkurile extrase din `!Tabel linkuri istorie NLM și DOCS.pdf`. Maparea intre temele BAC si testele istorice urmeaza sa fie facuta separat.
 
 ## Fisiere principale
 
 - `site/index.html` - interfata finala pentru elevi si profesor.
 - `site/pdfs/` - PDF-urile folosite de interfata finala, copiate cu nume stabile.
+- `data/classes.csv` - clasele disponibile in interfata.
+- `data/epochs.csv` - epocile folosite pentru clasa a 12-a.
 - `data/reviewed_task_topics.csv` - maparile manuale aprobate.
 - `data/topics.csv` - lista temelor si linkurile auxiliare.
 - `data/papers.csv` - indexul testelor pastrate.
@@ -20,6 +25,9 @@ Versiunea curenta:
 - `data/extraction_issues.csv` - probleme de extragere, daca exista.
 - `tools/build_history_browser_v3.py` - scriptul care regenereaza `site/index.html` si `site/pdfs/`.
 - `!Teste examene 2016 - 2024/` - sursa PDF-urilor de test pastrate pentru regenerare.
+- `!Tabel linkuri istorie NLM și DOCS.pdf` - sursa pentru catalogul de teme BAC.
+
+Folderul brut `!Teste clasa 12 2016 - 2026/` si arhiva zip sunt ignorate in Git pana cand stabilim exact ce fisiere intra in versiunea finala.
 
 ## Regenerare
 

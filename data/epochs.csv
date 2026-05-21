@@ -1,0 +1,6 @@
+﻿class_id,epoch_id,label,sort_order
+9,all,Toate temele,0
+12,antica,Epoca antică,1
+12,medievala,Epoca medievală,2
+12,moderna,Epoca modernă,3
+12,contemporana,Epoca contemporană,4

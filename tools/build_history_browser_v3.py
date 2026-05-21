@@ -28,6 +28,24 @@ from pypdf import PdfReader
 
 REVIEW_PATH = DATA_DIR / "reviewed_task_topics.csv"
 PDF_SITE_DIR = SITE_DIR / "pdfs"
+CLASS12_TOPIC_PDF = ROOT / "!Tabel linkuri istorie NLM și DOCS.pdf"
+CLASS_9_ID = "9"
+CLASS_12_ID = "12"
+
+
+CLASSES = [
+    {"class_id": CLASS_9_ID, "label": "Clasa a 9-a", "description": "Examen gimnazial"},
+    {"class_id": CLASS_12_ID, "label": "Clasa a 12-a", "description": "BAC"},
+]
+
+
+EPOCHS = [
+    {"class_id": CLASS_9_ID, "epoch_id": "all", "label": "Toate temele", "sort_order": 0},
+    {"class_id": CLASS_12_ID, "epoch_id": "antica", "label": "Epoca antică", "sort_order": 1},
+    {"class_id": CLASS_12_ID, "epoch_id": "medievala", "label": "Epoca medievală", "sort_order": 2},
+    {"class_id": CLASS_12_ID, "epoch_id": "moderna", "label": "Epoca modernă", "sort_order": 3},
+    {"class_id": CLASS_12_ID, "epoch_id": "contemporana", "label": "Epoca contemporană", "sort_order": 4},
+]
 
 
 def site_pdf_url(paper_id: object, page: int | None = None) -> str:
@@ -35,6 +53,139 @@ def site_pdf_url(paper_id: object, page: int | None = None) -> str:
     if page:
         url += f"#page={page}"
     return url
+
+
+def topic_uid(class_id: str, topic_id: object) -> str:
+    return f"{class_id}-{topic_id}"
+
+
+def class9_topics() -> list[dict[str, object]]:
+    topics: list[dict[str, object]] = []
+    for topic in TOPICS:
+        topic_id = str(topic["topic_id"])
+        topics.append(
+            {
+                "class_id": CLASS_9_ID,
+                "epoch_id": "all",
+                "topic_id": topic_id,
+                "topic_number": topic_id,
+                "topic_uid": topic_uid(CLASS_9_ID, topic_id),
+                "display_title": topic["display_title"],
+                "quiz_link": topic.get("quiz_link", ""),
+                "notebook_link": topic.get("notebook_link", ""),
+                "doc_link": topic.get("doc_link", ""),
+                "doc_links": [topic["doc_link"]] if topic.get("doc_link") else [],
+                "sort_order": int(topic_id),
+                "status": "ready",
+            }
+        )
+    return topics
+
+
+def compact_space(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def class12_pdf_text() -> str:
+    if not CLASS12_TOPIC_PDF.exists():
+        return ""
+    return "\n".join((page.extract_text() or "") for page in PdfReader(str(CLASS12_TOPIC_PDF)).pages)
+
+
+def split_epoch_sections(text: str) -> list[tuple[str, str]]:
+    markers = [
+        ("antica", r"Epoca\s+antic[ăa]"),
+        ("medievala", r"epoca\s+medieval[ăa]"),
+        ("moderna", r"Epoca\s+modern[ăa]"),
+        ("contemporana", r"Epoca\s+contemporan[ăa]"),
+    ]
+    found: list[tuple[int, str]] = []
+    for epoch_id, pattern in markers:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            found.append((match.start(), epoch_id))
+    found.sort()
+    sections: list[tuple[str, str]] = []
+    for index, (start, epoch_id) in enumerate(found):
+        end = found[index + 1][0] if index + 1 < len(found) else len(text)
+        sections.append((epoch_id, text[start:end]))
+    return sections
+
+
+def numbered_topic_spans(section: str) -> list[tuple[int, int, int]]:
+    spans: list[tuple[int, int, int]] = []
+    cursor = 0
+    expected = 1
+    while expected < 120:
+        match = re.search(rf"(?<![\w/]){expected}\s+(?=[A-ZĂÂÎȘŞȚŢa-zăâîșşțţ„\",,])", section[cursor:])
+        if not match:
+            break
+        start = cursor + match.start()
+        spans.append((expected, start, 0))
+        cursor = start + len(str(expected)) + 1
+        expected += 1
+    completed: list[tuple[int, int, int]] = []
+    for index, (number, start, _) in enumerate(spans):
+        end = spans[index + 1][1] if index + 1 < len(spans) else len(section)
+        completed.append((number, start, end))
+    return completed
+
+
+def topic_title_from_row(row_text: str, number: int) -> str:
+    row = compact_space(row_text)
+    row = re.sub(rf"^{number}\s+", "", row)
+    first_url = re.search(r"https?://", row)
+    title_part = row[: first_url.start()] if first_url else row
+    title_part = re.sub(r"\b(?:A1|A2|Studio|Test\s+gril[ăa](?:\s+20\s+întreb[ăa]ri)?|Test\s+grila(?:\s+20\s+întrebări)?)\s*:", " ", title_part, flags=re.IGNORECASE)
+    title_part = re.sub(r"\b(?:Link\s+în\s+NLM|Nr|Tema\s+din\s+programul\s+BAC)\b", " ", title_part, flags=re.IGNORECASE)
+    return compact_space(title_part).strip(" -–:")
+
+
+def links_from_row(row_text: str) -> tuple[list[str], list[str], list[str]]:
+    urls = re.findall(r"https?://[^\s]+", row_text)
+    clean_urls = [url.rstrip(".,;)") for url in urls]
+    docs = [url for url in clean_urls if "docs.google.com/document" in url]
+    notebooks = [url for url in clean_urls if "notebooklm.google.com/notebook" in url]
+    forms = [url for url in clean_urls if "forms.gle" in url or "docs.google.com/forms" in url]
+    return docs, notebooks, forms
+
+
+def class12_topics() -> list[dict[str, object]]:
+    text = class12_pdf_text()
+    if not text:
+        return []
+    topics: list[dict[str, object]] = []
+    global_order = 1
+    for epoch_id, section in split_epoch_sections(text):
+        for number, start, end in numbered_topic_spans(section):
+            row = section[start:end]
+            title = topic_title_from_row(row, number)
+            if not title or len(title) < 4:
+                continue
+            docs, notebooks, forms = links_from_row(row)
+            local_id = f"{epoch_id}-{number}"
+            topics.append(
+                {
+                    "class_id": CLASS_12_ID,
+                    "epoch_id": epoch_id,
+                    "topic_id": local_id,
+                    "topic_number": number,
+                    "topic_uid": topic_uid(CLASS_12_ID, local_id),
+                    "display_title": title,
+                    "quiz_link": forms[0] if forms else "",
+                    "notebook_link": notebooks[0] if notebooks else "",
+                    "doc_link": docs[0] if docs else "",
+                    "doc_links": docs,
+                    "sort_order": global_order,
+                    "status": "ready" if (docs or notebooks or forms) else "links_pending",
+                }
+            )
+            global_order += 1
+    return topics
+
+
+def all_topics() -> list[dict[str, object]]:
+    return class9_topics() + class12_topics()
 
 
 def copy_reviewed_pdfs(
@@ -79,6 +230,7 @@ def discover_test_papers() -> list[dict[str, object]]:
             page_count = 0
         papers.append(
             {
+                "class_id": CLASS_9_ID,
                 "paper_id": paper_id,
                 "year": year,
                 "session": session,
@@ -150,6 +302,7 @@ def make_task(
     test_path = str(paper["test_path"])
     return {
         "task_id": f"{paper['paper_id']}-{slug(task_ref)}",
+        "class_id": CLASS_9_ID,
         "paper_id": paper["paper_id"],
         "year": paper["year"],
         "session": paper["session"],
@@ -197,6 +350,7 @@ def extract_tasks() -> tuple[list[dict[str, object]], list[dict[str, object]], l
 
     for paper_obj in paper_objects:
         paper = {
+            "class_id": paper_obj["class_id"],
             "paper_id": paper_obj["paper_id"],
             "year": paper_obj["year"],
             "session": paper_obj["session"],
@@ -212,6 +366,7 @@ def extract_tasks() -> tuple[list[dict[str, object]], list[dict[str, object]], l
             issues.append(
                 {
                     "paper_id": paper_obj["paper_id"],
+                    "class_id": paper_obj["class_id"],
                     "year": paper_obj["year"],
                     "session": paper_obj["session"],
                     "variant": paper_obj["variant"],
@@ -227,6 +382,7 @@ def extract_tasks() -> tuple[list[dict[str, object]], list[dict[str, object]], l
             issues.append(
                 {
                     "paper_id": paper_obj["paper_id"],
+                    "class_id": paper_obj["class_id"],
                     "year": paper_obj["year"],
                     "session": paper_obj["session"],
                     "variant": paper_obj["variant"],
@@ -292,7 +448,9 @@ def reviewed_tags(review_rows: list[dict[str, str]], task_ids: set[str]) -> tupl
             tags.append(
                 {
                     "task_id": task_id,
+                    "class_id": CLASS_9_ID,
                     "topic_id": topic_id,
+                    "topic_uid": topic_uid(CLASS_9_ID, topic_id),
                     "source": "reviewed",
                     "confidence": "reviewed",
                     "score": 1000,
@@ -319,7 +477,9 @@ def auto_candidates(tasks: list[dict[str, object]], blocked_pairs: set[tuple[str
             candidates.append(
                 {
                     "task_id": task["task_id"],
+                    "class_id": CLASS_9_ID,
                     "topic_id": topic_id,
+                    "topic_uid": topic_uid(CLASS_9_ID, topic_id),
                     "source": "candidate",
                     "confidence": "unreviewed",
                     "score": score,
@@ -337,8 +497,11 @@ def build_html(
     candidates: list[dict[str, object]],
     issues: list[dict[str, object]],
 ) -> None:
+    topics = all_topics()
     payload = {
-        "topics": TOPICS,
+        "classes": CLASSES,
+        "epochs": EPOCHS,
+        "topics": topics,
         "papers": papers,
         "tasks": tasks,
         "reviewed": reviewed,
@@ -351,7 +514,7 @@ def build_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Navigator istorie clasa a 9-a</title>
+  <title>Navigator istorie</title>
   <style>
     :root {{
       --bg:#f5f3ff; --surface:#ffffff; --panel:#ffffff; --ink:#182033; --muted:#647084;
@@ -375,6 +538,10 @@ def build_html(
     .subtitle {{ margin-top:4px; color:var(--muted); font-size:12px; }}
     .stats {{ display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }}
     .pill {{ border:1px solid rgba(37,99,235,.16); border-radius:999px; padding:6px 10px; background:rgba(255,255,255,.76); color:#2d3f63; font-size:12px; white-space:nowrap; box-shadow:0 8px 24px rgba(37,99,235,.08); }}
+    .nav-controls {{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:0 18px 14px; padding-top:14px; }}
+    .seg-btn {{ border:1px solid rgba(37,99,235,.18); border-radius:999px; padding:8px 12px; background:#fff; color:#2d3f63; cursor:pointer; font-size:13px; box-shadow:0 8px 20px rgba(37,99,235,.07); }}
+    .seg-btn.active {{ background:var(--accent); border-color:var(--accent); color:#fff; }}
+    .epoch-tabs {{ display:flex; gap:8px; flex-wrap:wrap; }}
     .app {{ display:grid; grid-template-columns:320px minmax(0,1fr); min-height:calc(100vh - 68px); }}
     aside {{ border-right:1px solid rgba(185,194,238,.65); background:rgba(255,255,255,.58); padding:16px; overflow:auto; max-height:calc(100vh - 68px); backdrop-filter:blur(12px); }}
     .topic-list {{ display:grid; gap:8px; }}
@@ -432,6 +599,9 @@ def build_html(
       header {{ min-height:0; padding:10px 14px; position:static; align-items:center; flex-direction:row; }}
       h1 {{ font-size:17px; }}
       .stats {{ display:none; }}
+      .nav-controls {{ margin:0; padding:10px; overflow-x:auto; flex-wrap:nowrap; }}
+      .seg-btn {{ white-space:nowrap; padding:7px 10px; font-size:12px; }}
+      .epoch-tabs {{ flex-wrap:nowrap; }}
       .app {{ grid-template-columns:1fr; }}
       aside {{ max-height:none; border-right:0; border-bottom:1px solid var(--line); padding:10px 10px 8px; overflow:hidden; position:sticky; top:0; z-index:4; }}
       .topic-list {{ display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; scroll-snap-type:x proximity; }}
@@ -459,10 +629,14 @@ def build_html(
   <div class="shell">
     <header>
       <div>
-        <h1>Navigator istorie clasa a 9-a</h1>
+        <h1>Navigator istorie</h1>
       </div>
       <div id="meta" class="stats"></div>
     </header>
+    <nav class="nav-controls" aria-label="Selectare clasă și epocă">
+      <div id="classTabs" class="epoch-tabs"></div>
+      <div id="epochTabs" class="epoch-tabs"></div>
+    </nav>
     <div class="app">
       <aside>
         <div id="topicList" class="topic-list"></div>
@@ -491,7 +665,8 @@ def build_html(
   <script id="history-data" type="application/json">{json_payload}</script>
   <script>
     const data = JSON.parse(document.getElementById('history-data').textContent);
-    const topicsById = new Map(data.topics.map(t => [String(t.topic_id), t]));
+    const classesById = new Map(data.classes.map(c => [String(c.class_id), c]));
+    const topicsByUid = new Map(data.topics.map(t => [String(t.topic_uid), t]));
     const paperById = new Map(data.papers.map(p => [p.paper_id, p]));
     const taskById = new Map(data.tasks.map(t => [t.task_id, t]));
     const reviewedByTopic = new Map();
@@ -500,15 +675,19 @@ def build_html(
     for (const source of [data.reviewed, data.candidates]) {{
       for (const tag of source) {{
         const map = tag.source === 'reviewed' ? reviewedByTopic : candidateByTopic;
-        const topic = String(tag.topic_id);
+        const topic = String(tag.topic_uid || `${{tag.class_id || '9'}}-${{tag.topic_id}}`);
         if (!map.has(topic)) map.set(topic, []);
         map.get(topic).push(tag);
         if (!tagsByTask.has(tag.task_id)) tagsByTask.set(tag.task_id, []);
         tagsByTask.get(tag.task_id).push(tag);
       }}
     }}
-    let activeTopic = String((data.topics.find(t => (reviewedByTopic.get(String(t.topic_id)) || []).length) || data.topics[0]).topic_id);
+    let activeClass = '9';
+    let activeEpoch = 'all';
+    let activeTopic = String((data.topics.find(t => t.class_id === activeClass && (reviewedByTopic.get(String(t.topic_uid)) || []).length) || data.topics.find(t => t.class_id === activeClass) || data.topics[0]).topic_uid);
     let activeTaskId = '';
+    const classTabs = document.getElementById('classTabs');
+    const epochTabs = document.getElementById('epochTabs');
     const topicList = document.getElementById('topicList');
     const taskList = document.getElementById('taskList');
     const viewer = document.getElementById('viewer');
@@ -516,21 +695,58 @@ def build_html(
     const viewerEmpty = document.getElementById('viewerEmpty');
     const openExternal = document.getElementById('openExternal');
     const mobileQuery = window.matchMedia('(max-width: 780px)');
-    const reviewedTaskCount = new Set(data.reviewed.map(tag => tag.task_id)).size;
-    document.getElementById('meta').innerHTML = [
-      `${{data.papers.length}} teste`,
-      `${{data.tasks.length}} sarcini`,
-      `${{reviewedTaskCount}} sarcini mapate`,
-      `${{data.reviewed.length}} legaturi tema-test`,
-      `${{data.issues.length}} probleme extragere`
-    ].map(item => `<span class="pill">${{item}}</span>`).join('');
-    function visibleTagsForTopic(topicId) {{
-      return reviewedByTopic.get(topicId) || [];
+    function classTopics() {{
+      return data.topics
+        .filter(t => t.class_id === activeClass && (activeClass !== '12' || t.epoch_id === activeEpoch))
+        .sort((a,b) => a.sort_order - b.sort_order);
+    }}
+    function setDefaultTopic() {{
+      const topics = classTopics();
+      const mapped = topics.find(t => (reviewedByTopic.get(String(t.topic_uid)) || []).length);
+      activeTopic = String((mapped || topics[0] || data.topics[0]).topic_uid);
+    }}
+    function renderMeta() {{
+      const classPapers = data.papers.filter(p => p.class_id === activeClass);
+      const classTasks = data.tasks.filter(t => t.class_id === activeClass);
+      const classReviewed = data.reviewed.filter(t => t.class_id === activeClass);
+      const reviewedTaskCount = new Set(classReviewed.map(tag => tag.task_id)).size;
+      const labels = activeClass === '12'
+        ? [`${{classTopics().length}} teme`, `${{data.topics.filter(t => t.class_id === activeClass).length}} total teme BAC`, 'mapări în lucru']
+        : [`${{classPapers.length}} teste`, `${{classTasks.length}} sarcini`, `${{reviewedTaskCount}} sarcini mapate`, `${{classReviewed.length}} legături tema-test`];
+      document.getElementById('meta').innerHTML = labels.map(item => `<span class="pill">${{item}}</span>`).join('');
+    }}
+    function renderClassTabs() {{
+      classTabs.innerHTML = data.classes.map(c => `<button class="seg-btn ${{c.class_id === activeClass ? 'active' : ''}}" type="button" data-class="${{c.class_id}}">${{c.label}}</button>`).join('');
+      for (const button of classTabs.querySelectorAll('button')) button.addEventListener('click', () => {{
+        activeClass = button.dataset.class;
+        activeEpoch = activeClass === '12' ? 'antica' : 'all';
+        activeTaskId = '';
+        closeViewer();
+        setDefaultTopic();
+        renderAll();
+      }});
+    }}
+    function renderEpochTabs() {{
+      const epochs = data.epochs.filter(e => e.class_id === activeClass).sort((a,b) => a.sort_order - b.sort_order);
+      epochTabs.hidden = activeClass !== '12';
+      epochTabs.innerHTML = activeClass === '12' ? epochs.map(e => `<button class="seg-btn ${{e.epoch_id === activeEpoch ? 'active' : ''}}" type="button" data-epoch="${{e.epoch_id}}">${{e.label}}</button>`).join('') : '';
+      for (const button of epochTabs.querySelectorAll('button')) button.addEventListener('click', () => {{
+        activeEpoch = button.dataset.epoch;
+        activeTaskId = '';
+        closeViewer();
+        setDefaultTopic();
+        renderAll();
+      }});
+    }}
+    function visibleTagsForTopic(topicUid) {{
+      return reviewedByTopic.get(topicUid) || [];
     }}
     function renderTopics() {{
-      topicList.innerHTML = data.topics.map(t => {{
-        const reviewed = (reviewedByTopic.get(String(t.topic_id)) || []).length;
-        return `<button class="topic ${{String(t.topic_id)===activeTopic?'active':''}}" data-topic="${{t.topic_id}}"><strong>${{t.topic_id}}. ${{t.display_title}}</strong><span class="meta">${{reviewed}} teste asociate</span></button>`;
+      const topics = classTopics();
+      topicList.innerHTML = topics.map(t => {{
+        const reviewed = (reviewedByTopic.get(String(t.topic_uid)) || []).length;
+        const countLabel = activeClass === '12' ? (reviewed ? `${{reviewed}} teste asociate` : 'fără mapări încă') : `${{reviewed}} teste asociate`;
+        return `<button class="topic ${{String(t.topic_uid)===activeTopic?'active':''}}" data-topic="${{t.topic_uid}}"><strong>${{t.topic_number || t.topic_id}}. ${{t.display_title}}</strong><span class="meta">${{countLabel}}</span></button>`;
       }}).join('');
       for (const button of topicList.querySelectorAll('button')) button.addEventListener('click', () => {{
         activeTopic = button.dataset.topic;
@@ -545,25 +761,28 @@ def build_html(
     function topicTasks() {{
       const tags = visibleTagsForTopic(activeTopic);
       const taskIds = new Set(tags.map(t => t.task_id));
-      let rows = data.tasks.filter(task => taskIds.has(task.task_id));
+      let rows = data.tasks.filter(task => task.class_id === activeClass && taskIds.has(task.task_id));
       rows.sort((a,b) => (paperById.get(b.paper_id).year - paperById.get(a.paper_id).year) || a.task_ref.localeCompare(b.task_ref));
       return rows;
     }}
     function renderTasks() {{
-      const topic = topicsById.get(activeTopic);
-      document.getElementById('activeTitle').textContent = `${{topic.topic_id}}. ${{topic.display_title}}`;
-      document.getElementById('activeMeta').textContent = `${{(reviewedByTopic.get(activeTopic)||[]).length}} teste asociate, revizuite manual`;
-      document.getElementById('topicLinks').innerHTML = [link('Test grila', topic.quiz_link), link('NotebookLM', topic.notebook_link), link('Document', topic.doc_link)].filter(Boolean).join('');
+      const topic = topicsByUid.get(activeTopic);
+      document.getElementById('activeTitle').textContent = `${{topic.topic_number || topic.topic_id}}. ${{topic.display_title}}`;
+      const reviewedCount = (reviewedByTopic.get(activeTopic)||[]).length;
+      document.getElementById('activeMeta').textContent = activeClass === '12'
+        ? `${{data.epochs.find(e => e.epoch_id === topic.epoch_id && e.class_id === topic.class_id)?.label || ''}} · ${{reviewedCount ? reviewedCount + ' teste asociate' : 'mapările cu testele vor fi adăugate ulterior'}}`
+        : `${{reviewedCount}} teste asociate, revizuite manual`;
+      document.getElementById('topicLinks').innerHTML = [link('Test grila', topic.quiz_link), link('NotebookLM', topic.notebook_link), link('Document', topic.doc_link)].filter(Boolean).join('') || '<span class="meta">Linkurile pentru această temă vor fi completate ulterior.</span>';
       const rows = topicTasks();
       if (activeTaskId && !rows.some(task => task.task_id === activeTaskId)) closeViewer();
       document.getElementById('resultCount').textContent = rows.length ? `${{rows.length}} rezultate` : '0 rezultate';
       if (!rows.length) {{
-        taskList.innerHTML = '<div class="no-results">Nu exista sarcini asociate acestei teme.</div>';
+        taskList.innerHTML = `<div class="no-results">${{activeClass === '12' ? 'Tema este în catalog, dar sarcinile BAC asociate nu au fost mapate încă.' : 'Nu exista sarcini asociate acestei teme.'}}</div>`;
         return;
       }}
       taskList.innerHTML = rows.map(task => {{
         const paper = paperById.get(task.paper_id);
-        const relevantTags = (tagsByTask.get(task.task_id)||[]).filter(tag => tag.source === 'reviewed' && String(tag.topic_id) === activeTopic);
+        const relevantTags = (tagsByTask.get(task.task_id)||[]).filter(tag => tag.source === 'reviewed' && String(tag.topic_uid) === activeTopic);
         const tagHtml = relevantTags.map(tag => `<span class="chip reviewed">tema ${{tag.topic_id}}</span>`).join('');
         const variant = paper.variant ? ` · ${{paper.variant}}` : '';
         return `<button class="task ${{task.task_id === activeTaskId ? 'active' : ''}}" data-task="${{task.task_id}}">
@@ -649,8 +868,14 @@ def build_html(
     }};
     if (mobileQuery.addEventListener) mobileQuery.addEventListener('change', handleLayoutChange);
     else mobileQuery.addListener(handleLayoutChange);
-    renderTopics();
-    renderTasks();
+    function renderAll() {{
+      renderMeta();
+      renderClassTabs();
+      renderEpochTabs();
+      renderTopics();
+      renderTasks();
+    }}
+    renderAll();
   </script>
 </body>
 </html>"""
@@ -667,11 +892,14 @@ def main() -> None:
     reviewed_pairs = {(str(tag["task_id"]), str(tag["topic_id"])) for tag in reviewed}
     candidates = auto_candidates(tasks, rejected | reviewed_pairs)
     copy_reviewed_pdfs(papers, tasks, reviewed)
+    topics = all_topics()
 
-    write_csv(DATA_DIR / "topics.csv", TOPICS, ["topic_id", "display_title", "quiz_link", "notebook_link", "doc_link"])
-    write_csv(DATA_DIR / "papers.csv", papers, ["paper_id", "year", "session", "variant", "test_path", "page_count"])
-    write_csv(DATA_DIR / "tasks.csv", tasks, ["task_id", "paper_id", "year", "session", "variant", "task_ref", "subject", "item", "task_level", "page", "task_text", "test_path", "test_url"])
-    write_csv(DATA_DIR / "extraction_issues.csv", issues, ["paper_id", "year", "session", "variant", "test_path", "issue", "note"])
+    write_csv(DATA_DIR / "classes.csv", CLASSES, ["class_id", "label", "description"])
+    write_csv(DATA_DIR / "epochs.csv", EPOCHS, ["class_id", "epoch_id", "label", "sort_order"])
+    write_csv(DATA_DIR / "topics.csv", topics, ["class_id", "epoch_id", "topic_id", "topic_uid", "topic_number", "display_title", "quiz_link", "notebook_link", "doc_link", "doc_links", "sort_order", "status"])
+    write_csv(DATA_DIR / "papers.csv", papers, ["class_id", "paper_id", "year", "session", "variant", "test_path", "page_count"])
+    write_csv(DATA_DIR / "tasks.csv", tasks, ["class_id", "task_id", "paper_id", "year", "session", "variant", "task_ref", "subject", "item", "task_level", "page", "task_text", "test_path", "test_url"])
+    write_csv(DATA_DIR / "extraction_issues.csv", issues, ["class_id", "paper_id", "year", "session", "variant", "test_path", "issue", "note"])
     build_html(papers, tasks, reviewed, candidates, issues)
     print(f"papers={len(papers)} tasks={len(tasks)} reviewed={len(reviewed)} candidates={len(candidates)} extraction_issues={len(issues)}")
     print(f"wrote {SITE_DIR / 'index.html'}")

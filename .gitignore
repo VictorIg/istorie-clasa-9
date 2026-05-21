@@ -4,3 +4,5 @@ __pycache__/
 Thumbs.db
 .env
 .env.*
+*.zip
+\!Teste clasa 12 2016 - 2026/
