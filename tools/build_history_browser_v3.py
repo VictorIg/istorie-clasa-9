@@ -392,6 +392,7 @@ def subject_spans(text: str) -> list[tuple[str, int, int]]:
         (r"SUBIECTUL\s+(?:al\s+)?II(?:-lea)?\b", "II"),
         (r"SUBIECTUL\s+(?:al\s+)?III(?:-lea)?\b", "III"),
         (r"SUBIECTUL\s+(?:al\s+)?IV(?:-lea)?\b", "IV"),
+        (r"SUBIECTUL\s+(?:al\s+)?V(?:-lea)?\b", "V"),
     ]
     found: list[tuple[int, str]] = []
     for pattern, subject in patterns:
@@ -518,9 +519,11 @@ def extract_tasks() -> tuple[list[dict[str, object]], list[dict[str, object]], l
                 tasks.append(make_task(paper, "II.all", "II", "all", "section", page, section_text))
             elif class_id == CLASS_9_ID and subject == "III":
                 tasks.append(make_task(paper, "III.essay", "III", "essay", "essay", page, section_text))
+            elif class_id == CLASS_12_ID and subject in {"I", "II", "III", "V"}:
+                tasks.append(make_task(paper, f"{subject}.all", subject, "all", "section", page, section_text))
             elif class_id == CLASS_12_ID and subject == "IV":
                 tasks.append(make_task(paper, "IV.essay", "IV", "essay", "essay", page, section_text))
-            if (class_id == CLASS_9_ID and subject in {"I", "II"}) or (class_id == CLASS_12_ID and subject in {"I", "II", "III"}):
+            if class_id == CLASS_9_ID and subject in {"I", "II"}:
                 tasks.extend(item_tasks_from_subject(paper, subject, full_text[start:end], start, offsets))
 
     return papers, dedupe_tasks(tasks + load_manual_tasks()), issues
@@ -538,7 +541,6 @@ def dedupe_tasks(tasks: list[dict[str, object]]) -> list[dict[str, object]]:
 
 def load_manual_tasks() -> list[dict[str, object]]:
     if not CLASS12_MANUAL_TASKS_PATH.exists():
-        write_csv(CLASS12_MANUAL_TASKS_PATH, [], TASK_FIELDS)
         return []
     with CLASS12_MANUAL_TASKS_PATH.open(encoding="utf-8-sig", newline="") as handle:
         return [dict(row) for row in csv.DictReader(handle)]
