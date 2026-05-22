@@ -27,10 +27,16 @@ from pypdf import PdfReader
 
 
 REVIEW_PATH = DATA_DIR / "reviewed_task_topics.csv"
+CLASS12_REVIEW_PATH = DATA_DIR / "reviewed_task_topics_class12.csv"
+CLASS12_MANUAL_TASKS_PATH = DATA_DIR / "manual_tasks_class12.csv"
 PDF_SITE_DIR = SITE_DIR / "pdfs"
 CLASS12_TOPIC_PDF = ROOT / "!Tabel linkuri istorie NLM și DOCS.pdf"
+CLASS12_EXAM_ROOT = ROOT / "!Teste clasa 12 2016 - 2026"
 CLASS_9_ID = "9"
 CLASS_12_ID = "12"
+
+
+TASK_FIELDS = ["class_id", "task_id", "paper_id", "year", "session", "variant", "task_ref", "subject", "item", "task_level", "page", "task_text", "test_path", "test_url"]
 
 
 CLASSES = [
@@ -46,6 +52,38 @@ EPOCHS = [
     {"class_id": CLASS_12_ID, "epoch_id": "moderna", "label": "Epoca modernă", "sort_order": 3},
     {"class_id": CLASS_12_ID, "epoch_id": "contemporana", "label": "Epoca contemporană", "sort_order": 4},
 ]
+
+
+CLASS12_RECYCLED_CLASS9_LINKS = {
+    # BAC contemporary topics that substantially overlap with the class 9 contemporary program.
+    "contemporana-1": [1],
+    "contemporana-2": [4],
+    "contemporana-3": [2],
+    "contemporana-4": [3],
+    "contemporana-5": [4],
+    "contemporana-6": [3, 4],
+    "contemporana-7": [11],
+    "contemporana-8": [12],
+    "contemporana-9": [12],
+    "contemporana-10": [6, 7],
+    "contemporana-11": [9],
+    "contemporana-12": [5],
+    "contemporana-13": [13, 14],
+    "contemporana-14": [15, 16],
+    "contemporana-15": [16],
+    "contemporana-16": [15, 21],
+    "contemporana-17": [17],
+    "contemporana-19": [19],
+    "contemporana-20": [20, 21],
+    "contemporana-21": [20],
+    "contemporana-22": [24],
+    "contemporana-23": [18],
+    "contemporana-24": [22],
+    "contemporana-25": [23],
+    "contemporana-26": [26],
+    "contemporana-27": [25],
+    "contemporana-28": [26],
+}
 
 
 def site_pdf_url(paper_id: object, page: int | None = None) -> str:
@@ -75,6 +113,7 @@ def class9_topics() -> list[dict[str, object]]:
                 "notebook_link": topic.get("notebook_link", ""),
                 "doc_link": topic.get("doc_link", ""),
                 "doc_links": [topic["doc_link"]] if topic.get("doc_link") else [],
+                "reused_from_class9": "",
                 "sort_order": int(topic_id),
                 "status": "ready",
             }
@@ -176,6 +215,7 @@ def class12_topics() -> list[dict[str, object]]:
                     "notebook_link": notebooks[0] if notebooks else "",
                     "doc_link": docs[0] if docs else "",
                     "doc_links": docs,
+                    "reused_from_class9": "",
                     "sort_order": global_order,
                     "status": "ready" if (docs or notebooks or forms) else "links_pending",
                 }
@@ -184,8 +224,46 @@ def class12_topics() -> list[dict[str, object]]:
     return topics
 
 
+def apply_recycled_class9_links(topics: list[dict[str, object]]) -> list[dict[str, object]]:
+    class9_by_number = {
+        int(topic["topic_number"]): topic
+        for topic in topics
+        if topic["class_id"] == CLASS_9_ID
+    }
+    for topic in topics:
+        if topic["class_id"] != CLASS_12_ID:
+            continue
+        source_numbers = CLASS12_RECYCLED_CLASS9_LINKS.get(str(topic["topic_id"]), [])
+        if not source_numbers:
+            continue
+        source_topics = [class9_by_number[number] for number in source_numbers if number in class9_by_number]
+        if not source_topics:
+            continue
+        docs: list[str] = list(topic.get("doc_links") or [])
+        notebooks: list[str] = []
+        quizzes: list[str] = []
+        for source in source_topics:
+            if source.get("doc_link") and source["doc_link"] not in docs:
+                docs.append(str(source["doc_link"]))
+            if source.get("notebook_link"):
+                notebooks.append(str(source["notebook_link"]))
+            if source.get("quiz_link"):
+                quizzes.append(str(source["quiz_link"]))
+        if not topic.get("doc_link") and docs:
+            topic["doc_link"] = docs[0]
+        if not topic.get("notebook_link") and notebooks:
+            topic["notebook_link"] = notebooks[0]
+        if not topic.get("quiz_link") and quizzes:
+            topic["quiz_link"] = quizzes[0]
+        topic["doc_links"] = docs
+        topic["reused_from_class9"] = ", ".join(str(number) for number in source_numbers)
+        if topic.get("doc_link") or topic.get("notebook_link") or topic.get("quiz_link"):
+            topic["status"] = "reused_class9_links"
+    return topics
+
+
 def all_topics() -> list[dict[str, object]]:
-    return class9_topics() + class12_topics()
+    return apply_recycled_class9_links(class9_topics() + class12_topics())
 
 
 def copy_reviewed_pdfs(
@@ -240,6 +318,42 @@ def discover_test_papers() -> list[dict[str, object]]:
                 "page_count": page_count,
             }
         )
+    if CLASS12_EXAM_ROOT.exists():
+        for path in sorted(CLASS12_EXAM_ROOT.rglob("*.pdf")):
+            lower = path.name.lower()
+            if "barem" in lower or "borderou" in lower or "test" not in lower:
+                continue
+            try:
+                year = int(next(part for part in path.parts if re.fullmatch(r"20\d{2}", part)))
+            except StopIteration:
+                continue
+            relative_parts = [part.lower() for part in path.relative_to(CLASS12_EXAM_ROOT).parts]
+            is_real = any("real" in part for part in relative_parts)
+            profile_slug = "profil real" if is_real else "profil umanistic"
+            profile_label = "Profil real" if is_real else "Profil umanistic"
+            session_part = path.parent.name
+            if norm(session_part) == "real" and len(path.parents) > 1:
+                session_part = path.parent.parent.name
+            session = session_label(session_part)
+            test_variant = variant_from_name(path)
+            variant = f"{profile_label} · {test_variant}" if test_variant else profile_label
+            paper_id = slug(f"bac {year} {profile_slug} {session} {test_variant or 'test'}")
+            try:
+                page_count = len(PdfReader(str(path)).pages)
+            except Exception:
+                page_count = 0
+            papers.append(
+                {
+                    "class_id": CLASS_12_ID,
+                    "paper_id": paper_id,
+                    "year": year,
+                    "session": session,
+                    "variant": variant,
+                    "path": path,
+                    "test_path": rel_path(path),
+                    "page_count": page_count,
+                }
+            )
     return papers
 
 
@@ -277,6 +391,7 @@ def subject_spans(text: str) -> list[tuple[str, int, int]]:
         (r"SUBIECTUL\s+I\b", "I"),
         (r"SUBIECTUL\s+(?:al\s+)?II(?:-lea)?\b", "II"),
         (r"SUBIECTUL\s+(?:al\s+)?III(?:-lea)?\b", "III"),
+        (r"SUBIECTUL\s+(?:al\s+)?IV(?:-lea)?\b", "IV"),
     ]
     found: list[tuple[int, str]] = []
     for pattern, subject in patterns:
@@ -302,7 +417,7 @@ def make_task(
     test_path = str(paper["test_path"])
     return {
         "task_id": f"{paper['paper_id']}-{slug(task_ref)}",
-        "class_id": CLASS_9_ID,
+        "class_id": paper["class_id"],
         "paper_id": paper["paper_id"],
         "year": paper["year"],
         "session": paper["session"],
@@ -398,14 +513,17 @@ def extract_tasks() -> tuple[list[dict[str, object]], list[dict[str, object]], l
             if len(section_text) < 30:
                 continue
             page = page_for_offset(offsets, start)
-            if subject == "II":
+            class_id = str(paper["class_id"])
+            if class_id == CLASS_9_ID and subject == "II":
                 tasks.append(make_task(paper, "II.all", "II", "all", "section", page, section_text))
-            elif subject == "III":
+            elif class_id == CLASS_9_ID and subject == "III":
                 tasks.append(make_task(paper, "III.essay", "III", "essay", "essay", page, section_text))
-            if subject in {"I", "II"}:
+            elif class_id == CLASS_12_ID and subject == "IV":
+                tasks.append(make_task(paper, "IV.essay", "IV", "essay", "essay", page, section_text))
+            if (class_id == CLASS_9_ID and subject in {"I", "II"}) or (class_id == CLASS_12_ID and subject in {"I", "II", "III"}):
                 tasks.extend(item_tasks_from_subject(paper, subject, full_text[start:end], start, offsets))
 
-    return papers, dedupe_tasks(tasks), issues
+    return papers, dedupe_tasks(tasks + load_manual_tasks()), issues
 
 
 def dedupe_tasks(tasks: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -418,16 +536,29 @@ def dedupe_tasks(tasks: list[dict[str, object]]) -> list[dict[str, object]]:
     return list(by_id.values())
 
 
-def ensure_review_template() -> None:
-    if REVIEW_PATH.exists():
+def load_manual_tasks() -> list[dict[str, object]]:
+    if not CLASS12_MANUAL_TASKS_PATH.exists():
+        write_csv(CLASS12_MANUAL_TASKS_PATH, [], TASK_FIELDS)
+        return []
+    with CLASS12_MANUAL_TASKS_PATH.open(encoding="utf-8-sig", newline="") as handle:
+        return [dict(row) for row in csv.DictReader(handle)]
+
+
+def ensure_review_template(path: Path) -> None:
+    if path.exists():
         return
-    write_csv(REVIEW_PATH, [], ["task_id", "topic_id", "status", "note"])
+    write_csv(path, [], ["task_id", "topic_id", "status", "note"])
 
 
 def load_review_rows() -> list[dict[str, str]]:
-    ensure_review_template()
-    with REVIEW_PATH.open(encoding="utf-8-sig", newline="") as handle:
-        return list(csv.DictReader(handle))
+    rows: list[dict[str, str]] = []
+    for class_id, path in ((CLASS_9_ID, REVIEW_PATH), (CLASS_12_ID, CLASS12_REVIEW_PATH)):
+        ensure_review_template(path)
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                row["class_id"] = class_id
+                rows.append(row)
+    return rows
 
 
 def reviewed_tags(review_rows: list[dict[str, str]], task_ids: set[str]) -> tuple[list[dict[str, object]], set[tuple[str, str]]]:
@@ -436,6 +567,7 @@ def reviewed_tags(review_rows: list[dict[str, str]], task_ids: set[str]) -> tupl
     for row in review_rows:
         task_id = (row.get("task_id") or "").strip()
         topic_id = (row.get("topic_id") or "").strip()
+        class_id = (row.get("class_id") or CLASS_9_ID).strip()
         status = norm(row.get("status") or "approved")
         note = (row.get("note") or "").strip()
         if not task_id or not topic_id:
@@ -448,9 +580,9 @@ def reviewed_tags(review_rows: list[dict[str, str]], task_ids: set[str]) -> tupl
             tags.append(
                 {
                     "task_id": task_id,
-                    "class_id": CLASS_9_ID,
+                    "class_id": class_id,
                     "topic_id": topic_id,
-                    "topic_uid": topic_uid(CLASS_9_ID, topic_id),
+                    "topic_uid": topic_uid(class_id, topic_id),
                     "source": "reviewed",
                     "confidence": "reviewed",
                     "score": 1000,
@@ -464,6 +596,8 @@ def reviewed_tags(review_rows: list[dict[str, str]], task_ids: set[str]) -> tupl
 def auto_candidates(tasks: list[dict[str, object]], blocked_pairs: set[tuple[str, str]]) -> list[dict[str, object]]:
     candidates: list[dict[str, object]] = []
     for task in tasks:
+        if str(task.get("class_id")) != CLASS_9_ID:
+            continue
         scored = []
         for topic in TOPICS:
             score, hits = score_topic(str(task["classification_text"]), int(topic["topic_id"]))
@@ -772,7 +906,9 @@ def build_html(
       document.getElementById('activeMeta').textContent = activeClass === '12'
         ? `${{data.epochs.find(e => e.epoch_id === topic.epoch_id && e.class_id === topic.class_id)?.label || ''}} · ${{reviewedCount ? reviewedCount + ' teste asociate' : 'mapările cu testele vor fi adăugate ulterior'}}`
         : `${{reviewedCount}} teste asociate, revizuite manual`;
-      document.getElementById('topicLinks').innerHTML = [link('Test grila', topic.quiz_link), link('NotebookLM', topic.notebook_link), link('Document', topic.doc_link)].filter(Boolean).join('') || '<span class="meta">Linkurile pentru această temă vor fi completate ulterior.</span>';
+      const docLinks = [...new Set(topic.doc_links && topic.doc_links.length ? topic.doc_links : (topic.doc_link ? [topic.doc_link] : []))];
+      const docHtml = docLinks.map((href, index) => link(docLinks.length > 1 ? `Sinteza A2 ${{index + 1}}` : 'Sinteza A2', href));
+      document.getElementById('topicLinks').innerHTML = [link('Test grila', topic.quiz_link), link('NotebookLM', topic.notebook_link), ...docHtml].filter(Boolean).join('') || '<span class="meta">Linkurile pentru această temă vor fi completate ulterior.</span>';
       const rows = topicTasks();
       if (activeTaskId && !rows.some(task => task.task_id === activeTaskId)) closeViewer();
       document.getElementById('resultCount').textContent = rows.length ? `${{rows.length}} rezultate` : '0 rezultate';
@@ -896,9 +1032,9 @@ def main() -> None:
 
     write_csv(DATA_DIR / "classes.csv", CLASSES, ["class_id", "label", "description"])
     write_csv(DATA_DIR / "epochs.csv", EPOCHS, ["class_id", "epoch_id", "label", "sort_order"])
-    write_csv(DATA_DIR / "topics.csv", topics, ["class_id", "epoch_id", "topic_id", "topic_uid", "topic_number", "display_title", "quiz_link", "notebook_link", "doc_link", "doc_links", "sort_order", "status"])
+    write_csv(DATA_DIR / "topics.csv", topics, ["class_id", "epoch_id", "topic_id", "topic_uid", "topic_number", "display_title", "quiz_link", "notebook_link", "doc_link", "doc_links", "reused_from_class9", "sort_order", "status"])
     write_csv(DATA_DIR / "papers.csv", papers, ["class_id", "paper_id", "year", "session", "variant", "test_path", "page_count"])
-    write_csv(DATA_DIR / "tasks.csv", tasks, ["class_id", "task_id", "paper_id", "year", "session", "variant", "task_ref", "subject", "item", "task_level", "page", "task_text", "test_path", "test_url"])
+    write_csv(DATA_DIR / "tasks.csv", tasks, TASK_FIELDS)
     write_csv(DATA_DIR / "extraction_issues.csv", issues, ["class_id", "paper_id", "year", "session", "variant", "test_path", "issue", "note"])
     build_html(papers, tasks, reviewed, candidates, issues)
     print(f"papers={len(papers)} tasks={len(tasks)} reviewed={len(reviewed)} candidates={len(candidates)} extraction_issues={len(issues)}")
