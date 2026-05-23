@@ -4,6 +4,7 @@ import csv
 import json
 import re
 import shutil
+from collections import defaultdict
 from pathlib import Path
 
 from build_history_browser import (
@@ -626,6 +627,118 @@ def auto_candidates(tasks: list[dict[str, object]], blocked_pairs: set[tuple[str
     return candidates
 
 
+def build_topic_priority(
+    topics: list[dict[str, object]],
+    papers: list[dict[str, object]],
+    tasks: list[dict[str, object]],
+    reviewed: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    task_by_id = {str(task["task_id"]): task for task in tasks}
+    years_by_class: dict[str, list[int]] = defaultdict(list)
+    for paper in papers:
+        year = int(paper["year"])
+        years_by_class[str(paper["class_id"])].append(year)
+
+    tags_by_topic: dict[str, dict[str, object]] = defaultdict(
+        lambda: {
+            "task_ids": set(),
+            "paper_ids": set(),
+            "years": set(),
+            "recent_score": 0.0,
+            "essay_count": 0,
+            "section_count": 0,
+            "last_year": None,
+        }
+    )
+    seen_pairs: set[tuple[str, str]] = set()
+    for tag in reviewed:
+        task_id = str(tag["task_id"])
+        topic_uid_value = str(tag.get("topic_uid") or topic_uid(str(tag.get("class_id") or CLASS_9_ID), tag["topic_id"]))
+        pair = (task_id, topic_uid_value)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        task = task_by_id.get(task_id)
+        if not task:
+            continue
+        class_id = str(task["class_id"])
+        max_year = max(years_by_class.get(class_id) or [int(task["year"])])
+        year = int(task["year"])
+        paper_id = str(task["paper_id"])
+        stats = tags_by_topic[topic_uid_value]
+        stats["task_ids"].add(task_id)
+        stats["years"].add(year)
+        if paper_id not in stats["paper_ids"]:
+            stats["recent_score"] = float(stats["recent_score"]) + 0.5 ** ((max_year - year) / 3)
+        stats["paper_ids"].add(paper_id)
+        stats["last_year"] = max(year, int(stats["last_year"] or year))
+        if str(task.get("task_level")) == "essay":
+            stats["essay_count"] = int(stats["essay_count"]) + 1
+        elif str(task.get("task_level")) == "section":
+            stats["section_count"] = int(stats["section_count"]) + 1
+
+    raw: list[dict[str, object]] = []
+    for topic in topics:
+        uid = str(topic["topic_uid"])
+        stats = tags_by_topic.get(uid)
+        raw.append(
+            {
+                "class_id": str(topic["class_id"]),
+                "topic_uid": uid,
+                "task_count": len(stats["task_ids"]) if stats else 0,
+                "paper_count": len(stats["paper_ids"]) if stats else 0,
+                "year_count": len(stats["years"]) if stats else 0,
+                "last_year": stats["last_year"] if stats else None,
+                "recent_score": round(float(stats["recent_score"]), 4) if stats else 0,
+                "essay_count": int(stats["essay_count"]) if stats else 0,
+                "section_count": int(stats["section_count"]) if stats else 0,
+            }
+        )
+
+    max_by_class: dict[str, dict[str, float]] = defaultdict(lambda: {"papers": 1.0, "recent": 1.0, "impact": 1.0})
+    for row in raw:
+        class_id = str(row["class_id"])
+        impact = float(row["essay_count"]) + 0.5 * float(row["section_count"])
+        max_by_class[class_id]["papers"] = max(max_by_class[class_id]["papers"], float(row["paper_count"]))
+        max_by_class[class_id]["recent"] = max(max_by_class[class_id]["recent"], float(row["recent_score"]))
+        max_by_class[class_id]["impact"] = max(max_by_class[class_id]["impact"], impact)
+
+    priority: list[dict[str, object]] = []
+    for row in raw:
+        class_id = str(row["class_id"])
+        maxima = max_by_class[class_id]
+        impact = float(row["essay_count"]) + 0.5 * float(row["section_count"])
+        score = round(
+            100
+            * (
+                0.55 * (float(row["paper_count"]) / maxima["papers"])
+                + 0.30 * (float(row["recent_score"]) / maxima["recent"])
+                + 0.15 * (impact / maxima["impact"])
+            )
+        )
+        if int(row["paper_count"]) == 0:
+            band = "insufficient"
+            label = "Date insuficiente"
+        elif score >= 65:
+            band = "high"
+            label = "Prioritate ridicată"
+        elif score >= 35:
+            band = "medium"
+            label = "Prioritate medie"
+        else:
+            band = "low"
+            label = "Prioritate redusă"
+        priority.append(
+            {
+                **row,
+                "score": score,
+                "band": band,
+                "label": label,
+            }
+        )
+    return priority
+
+
 def build_html(
     papers: list[dict[str, object]],
     tasks: list[dict[str, object]],
@@ -634,10 +747,12 @@ def build_html(
     issues: list[dict[str, object]],
 ) -> None:
     topics = all_topics()
+    priority = build_topic_priority(topics, papers, tasks, reviewed)
     payload = {
         "classes": CLASSES,
         "epochs": EPOCHS,
         "topics": topics,
+        "priority": priority,
         "papers": papers,
         "tasks": tasks,
         "reviewed": reviewed,
@@ -681,10 +796,37 @@ def build_html(
     .app {{ display:grid; grid-template-columns:320px minmax(0,1fr); min-height:calc(100vh - 68px); }}
     aside {{ border-right:1px solid rgba(185,194,238,.65); background:rgba(255,255,255,.58); padding:16px; overflow:auto; max-height:calc(100vh - 68px); backdrop-filter:blur(12px); }}
     .topic-list {{ display:grid; gap:8px; }}
-    .topic {{ width:100%; border:1px solid rgba(185,194,238,.8); border-radius:8px; padding:10px 11px; background:rgba(255,255,255,.86); text-align:left; cursor:pointer; transition:border-color .14s ease, background .14s ease, transform .14s ease, box-shadow .14s ease; }}
+    .priority-panel {{ border:1px solid rgba(185,194,238,.78); border-radius:8px; background:rgba(255,255,255,.82); padding:10px; margin-bottom:10px; box-shadow:0 12px 28px rgba(37,99,235,.08); }}
+    .priority-panel-top {{ display:flex; justify-content:space-between; gap:8px; align-items:center; }}
+    .priority-panel strong {{ font-size:13px; }}
+    .priority-panel p {{ margin:6px 0 9px; color:var(--muted); font-size:11px; line-height:1.35; }}
+    .priority-note {{ border-radius:999px; padding:3px 7px; background:#f1f5f9; color:#475569; font-size:10px; white-space:nowrap; }}
+    .sort-controls {{ display:grid; grid-template-columns:1fr 1fr; gap:6px; }}
+    .sort-btn {{ border:1px solid rgba(37,99,235,.16); border-radius:8px; padding:7px 8px; background:#fff; color:#2d3f63; cursor:pointer; font-size:11px; }}
+    .sort-btn.active {{ border-color:rgba(37,99,235,.58); background:#eff6ff; color:#1d4ed8; font-weight:700; }}
+    .priority-legend {{ display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }}
+    .legend-dot {{ width:10px; height:10px; border-radius:999px; display:inline-block; box-shadow:inset 0 0 0 1px rgba(15,23,42,.1); }}
+    .legend-item {{ display:flex; gap:4px; align-items:center; color:var(--muted); font-size:10px; }}
+    .topic {{ width:100%; border:1px solid rgba(185,194,238,.8); border-left-width:5px; border-radius:8px; padding:10px 11px; background:rgba(255,255,255,.86); text-align:left; cursor:pointer; transition:border-color .14s ease, background .14s ease, transform .14s ease, box-shadow .14s ease; }}
     .topic:hover {{ border-color:var(--accent); transform:translateY(-1px); box-shadow:0 12px 28px rgba(37,99,235,.1); }}
     .topic.active {{ border-color:rgba(37,99,235,.55); background:linear-gradient(135deg,#eef4ff,#ecfeff); box-shadow:0 14px 34px rgba(37,99,235,.16); }}
+    .topic.priority-high {{ border-left-color:#dc2626; }}
+    .topic.priority-medium {{ border-left-color:#f59e0b; }}
+    .topic.priority-low {{ border-left-color:#14b8a6; }}
+    .topic.priority-insufficient {{ border-left-color:#94a3b8; }}
     .topic strong {{ display:block; font-size:13px; line-height:1.3; }}
+    .priority-row {{ display:flex; gap:8px; align-items:center; justify-content:space-between; margin-top:7px; }}
+    .priority-badge {{ border-radius:999px; padding:4px 8px; font-size:10px; font-weight:700; white-space:nowrap; }}
+    .priority-badge.priority-high {{ background:#fee2e2; color:#991b1b; }}
+    .priority-badge.priority-medium {{ background:#fef3c7; color:#92400e; }}
+    .priority-badge.priority-low {{ background:#ccfbf1; color:#115e59; }}
+    .priority-badge.priority-insufficient {{ background:#f1f5f9; color:#475569; }}
+    .priority-meter {{ flex:1; min-width:42px; height:6px; border-radius:999px; background:#e2e8f0; overflow:hidden; }}
+    .priority-fill {{ display:block; height:100%; border-radius:999px; background:#94a3b8; }}
+    .priority-fill.priority-high {{ background:#dc2626; }}
+    .priority-fill.priority-medium {{ background:#f59e0b; }}
+    .priority-fill.priority-low {{ background:#14b8a6; }}
+    .priority-fill.priority-insufficient {{ background:#94a3b8; }}
     .meta {{ color:var(--muted); font-size:12px; line-height:1.45; }}
     main {{ min-width:0; padding:18px; overflow:hidden; }}
     .notice {{ display:flex; gap:10px; align-items:flex-start; border:1px solid #f0d3ac; background:#fff8ed; color:#6b3f12; border-radius:8px; padding:10px 12px; margin-bottom:14px; font-size:13px; line-height:1.35; }}
@@ -775,6 +917,16 @@ def build_html(
     </nav>
     <div class="app">
       <aside>
+        <div class="priority-panel">
+          <div class="priority-panel-top"><strong>Teme cu prioritate</strong><span class="priority-note">orientativ</span></div>
+          <p>Semnal din testele anterioare, cu recenta. Nu prezice subiectele viitoare si nu inlocuieste programa completa.</p>
+          <div class="sort-controls" id="sortControls"></div>
+          <div class="priority-legend">
+            <span class="legend-item"><span class="legend-dot" style="background:#dc2626"></span>ridicata</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>medie</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#14b8a6"></span>redusa</span>
+          </div>
+        </div>
         <div id="topicList" class="topic-list"></div>
       </aside>
       <main>
@@ -803,6 +955,7 @@ def build_html(
     const data = JSON.parse(document.getElementById('history-data').textContent);
     const classesById = new Map(data.classes.map(c => [String(c.class_id), c]));
     const topicsByUid = new Map(data.topics.map(t => [String(t.topic_uid), t]));
+    const priorityByUid = new Map((data.priority || []).map(p => [String(p.topic_uid), p]));
     const paperById = new Map(data.papers.map(p => [p.paper_id, p]));
     const taskById = new Map(data.tasks.map(t => [t.task_id, t]));
     const reviewedByTopic = new Map();
@@ -820,10 +973,12 @@ def build_html(
     }}
     let activeClass = '9';
     let activeEpoch = 'all';
+    let topicSortMode = 'program';
     let activeTopic = String((data.topics.find(t => t.class_id === activeClass && (reviewedByTopic.get(String(t.topic_uid)) || []).length) || data.topics.find(t => t.class_id === activeClass) || data.topics[0]).topic_uid);
     let activeTaskId = '';
     const classTabs = document.getElementById('classTabs');
     const epochTabs = document.getElementById('epochTabs');
+    const sortControls = document.getElementById('sortControls');
     const topicList = document.getElementById('topicList');
     const taskList = document.getElementById('taskList');
     const viewer = document.getElementById('viewer');
@@ -832,9 +987,15 @@ def build_html(
     const openExternal = document.getElementById('openExternal');
     const mobileQuery = window.matchMedia('(max-width: 780px)');
     function classTopics() {{
-      return data.topics
-        .filter(t => t.class_id === activeClass && (activeClass !== '12' || t.epoch_id === activeEpoch))
-        .sort((a,b) => a.sort_order - b.sort_order);
+      const topics = data.topics.filter(t => t.class_id === activeClass && (activeClass !== '12' || t.epoch_id === activeEpoch));
+      if (topicSortMode === 'priority') {{
+        return topics.sort((a,b) => {{
+          const ap = priorityByUid.get(String(a.topic_uid)) || {{score:0, paper_count:0}};
+          const bp = priorityByUid.get(String(b.topic_uid)) || {{score:0, paper_count:0}};
+          return (Number(bp.score) - Number(ap.score)) || (Number(bp.paper_count) - Number(ap.paper_count)) || (a.sort_order - b.sort_order);
+        }});
+      }}
+      return topics.sort((a,b) => a.sort_order - b.sort_order);
     }}
     function setDefaultTopic() {{
       const topics = classTopics();
@@ -862,6 +1023,17 @@ def build_html(
         renderAll();
       }});
     }}
+    function renderSortControls() {{
+      sortControls.innerHTML = [
+        ['program', 'Programa'],
+        ['priority', 'Prioritate']
+      ].map(([mode, label]) => `<button class="sort-btn ${{topicSortMode === mode ? 'active' : ''}}" type="button" data-sort="${{mode}}">${{label}}</button>`).join('');
+      for (const button of sortControls.querySelectorAll('button')) button.addEventListener('click', () => {{
+        topicSortMode = button.dataset.sort;
+        renderSortControls();
+        renderTopics();
+      }});
+    }}
     function renderEpochTabs() {{
       const epochs = data.epochs.filter(e => e.class_id === activeClass).sort((a,b) => a.sort_order - b.sort_order);
       epochTabs.hidden = activeClass !== '12';
@@ -877,7 +1049,7 @@ def build_html(
     function visibleTagsForTopic(topicUid) {{
       return reviewedByTopic.get(topicUid) || [];
     }}
-    function renderTopics() {{
+    function renderTopicsLegacy() {{
       const topics = classTopics();
       topicList.innerHTML = topics.map(t => {{
         const reviewed = (reviewedByTopic.get(String(t.topic_uid)) || []).length;
@@ -894,6 +1066,37 @@ def build_html(
       }});
     }}
     function link(label, href) {{ return href ? `<a href="${{href}}" target="_blank" rel="noreferrer">${{label}}</a>` : ''; }}
+    function renderTopics() {{
+      const topics = classTopics();
+      topicList.innerHTML = topics.map(t => {{
+        const reviewed = (reviewedByTopic.get(String(t.topic_uid)) || []).length;
+        const priority = priorityByUid.get(String(t.topic_uid)) || {{band:'insufficient', label:'Date insuficiente', score:0, paper_count:0, last_year:null, essay_count:0, section_count:0}};
+        const priorityClass = `priority-${{priority.band}}`;
+        const meterWidth = priority.band === 'insufficient' ? 100 : Math.max(8, Number(priority.score || 0));
+        const detailParts = [];
+        if (priority.paper_count) detailParts.push(`${{priority.paper_count}} teste`);
+        if (priority.last_year) detailParts.push(`recent ${{priority.last_year}}`);
+        if (priority.essay_count) detailParts.push(`${{priority.essay_count}} eseuri`);
+        if (!detailParts.length) detailParts.push('fara istoric mapat');
+        const countLabel = activeClass === '12' ? (reviewed ? `${{reviewed}} teste asociate` : 'fara mapari inca') : `${{reviewed}} teste asociate`;
+        return `<button class="topic ${{priorityClass}} ${{String(t.topic_uid)===activeTopic?'active':''}}" data-topic="${{t.topic_uid}}">
+          <strong>${{t.topic_number || t.topic_id}}. ${{t.display_title}}</strong>
+          <span class="meta">${{countLabel}} · ${{detailParts.join(' · ')}}</span>
+          <span class="priority-row">
+            <span class="priority-meter"><span class="priority-fill ${{priorityClass}}" style="width:${{meterWidth}}%"></span></span>
+            <span class="priority-badge ${{priorityClass}}">${{priority.label}}</span>
+          </span>
+        </button>`;
+      }}).join('');
+      for (const button of topicList.querySelectorAll('button')) button.addEventListener('click', () => {{
+        activeTopic = button.dataset.topic;
+        activeTaskId = '';
+        closeViewer();
+        renderTopics();
+        renderTasks();
+        document.getElementById('activeTitle').scrollIntoView({{block:'start', behavior:'smooth'}});
+      }});
+    }}
     function topicTasks() {{
       const tags = visibleTagsForTopic(activeTopic);
       const taskIds = new Set(tags.map(t => t.task_id));
@@ -908,6 +1111,11 @@ def build_html(
       document.getElementById('activeMeta').textContent = activeClass === '12'
         ? `${{data.epochs.find(e => e.epoch_id === topic.epoch_id && e.class_id === topic.class_id)?.label || ''}} · ${{reviewedCount ? reviewedCount + ' teste asociate' : 'mapările cu testele vor fi adăugate ulterior'}}`
         : `${{reviewedCount}} teste asociate, revizuite manual`;
+      const priority = priorityByUid.get(activeTopic) || {{label:'Date insuficiente', score:0, paper_count:0, last_year:null}};
+      const priorityMeta = priority.paper_count
+        ? `${{priority.label}} · scor orientativ ${{priority.score}}/100 · ${{priority.paper_count}} teste · ultimul ${{priority.last_year}}`
+        : `${{priority.label}} · nu exista inca aparitii mapate`;
+      document.getElementById('activeMeta').textContent += ` · ${{priorityMeta}}`;
       const docLinks = [...new Set(topic.doc_links && topic.doc_links.length ? topic.doc_links : (topic.doc_link ? [topic.doc_link] : []))];
       const docHtml = docLinks.map((href, index) => link(docLinks.length > 1 ? `Sinteza A2 ${{index + 1}}` : 'Sinteza A2', href));
       document.getElementById('topicLinks').innerHTML = [link('Test grila', topic.quiz_link), link('NotebookLM', topic.notebook_link), ...docHtml].filter(Boolean).join('') || '<span class="meta">Linkurile pentru această temă vor fi completate ulterior.</span>';
@@ -1009,6 +1217,7 @@ def build_html(
     function renderAll() {{
       renderMeta();
       renderClassTabs();
+      renderSortControls();
       renderEpochTabs();
       renderTopics();
       renderTasks();
